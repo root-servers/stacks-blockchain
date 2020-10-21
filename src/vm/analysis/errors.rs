@@ -13,6 +13,7 @@ pub enum CheckErrors {
     CostOverflow,
     CostBalanceExceeded(ExecutionCost, ExecutionCost),
     MemoryBalanceExceeded(u64, u64),
+    CostComputationFailed(String),
 
     ValueTooLarge,
     ValueOutOfBounds,
@@ -222,6 +223,7 @@ impl From<CostErrors> for CheckErrors {
             CostErrors::CostOverflow => CheckErrors::CostOverflow,
             CostErrors::CostBalanceExceeded(a, b) => CheckErrors::CostBalanceExceeded(a, b),
             CostErrors::MemoryBalanceExceeded(a, b) => CheckErrors::MemoryBalanceExceeded(a, b),
+            CostErrors::CostComputationFailed(s) => CheckErrors::CostComputationFailed(s),
         }
     }
 }
@@ -383,6 +385,7 @@ impl DiagnosableError for CheckErrors {
             CheckErrors::TypeAlreadyAnnotatedFailure | CheckErrors::CheckerImplementationFailure => {
                 format!("internal error - please file an issue on github.com/blockstack/blockstack-core")
             },
+            CheckErrors::CostComputationFailed(s) => format!("contract cost computation failed: {}", s),
         }
     }
 

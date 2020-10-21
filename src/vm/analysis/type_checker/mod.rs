@@ -4,10 +4,7 @@ pub mod natives;
 
 use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
-use vm::costs::{
-    analysis_typecheck_cost, cost_functions, CostErrors, CostOverflowingMath, CostTracker,
-    ExecutionCost, LimitedCostTracker,
-};
+use vm::costs::{analysis_typecheck_cost, cost_functions, CostErrors, CostOverflowingMath, CostTracker, ExecutionCost, LimitedCostTracker, ClarityCostFunctionReference};
 use vm::functions::define::DefineFunctionsParsed;
 use vm::functions::NativeFunctions;
 use vm::representations::SymbolicExpressionType::{
@@ -31,6 +28,7 @@ pub use self::natives::{SimpleNativeFunction, TypedNativeFunction};
 pub use super::errors::{
     check_argument_count, check_arguments_at_least, CheckError, CheckErrors, CheckResult,
 };
+use vm::contexts::Environment;
 
 #[cfg(test)]
 mod tests;
@@ -60,6 +58,13 @@ pub struct TypeChecker<'a, 'b> {
 }
 
 impl CostTracker for TypeChecker<'_, '_> {
+    fn compute_cost(
+        &mut self,
+        cost_function: ClarityCostFunctionReference,
+        input: Option<u64>) -> Result<ExecutionCost, CostErrors> {
+        self.cost_track.compute_cost(cost_function, input)
+    }
+
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         self.cost_track.add_cost(cost)
     }

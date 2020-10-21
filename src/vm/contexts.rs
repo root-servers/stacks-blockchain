@@ -6,7 +6,7 @@ use vm::ast;
 use vm::ast::ContractAST;
 use vm::callables::{DefinedFunction, FunctionIdentifier};
 use vm::contracts::Contract;
-use vm::costs::{cost_functions, CostErrors, CostTracker, ExecutionCost, LimitedCostTracker};
+use vm::costs::{cost_functions, CostErrors, CostTracker, ExecutionCost, LimitedCostTracker, ClarityCostFunctionReference};
 use vm::database::ClarityDatabase;
 use vm::errors::{CheckErrors, InterpreterError, InterpreterResult as Result, RuntimeErrorType};
 use vm::functions::handle_contract_call_special_cases;
@@ -582,6 +582,12 @@ impl<'a> OwnedEnvironment<'a> {
 }
 
 impl CostTracker for Environment<'_, '_> {
+    fn compute_cost(
+        &mut self,
+        cost_function: ClarityCostFunctionReference,
+        input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+        self.global_context.cost_track.compute_cost(cost_function, input)
+    }
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         self.global_context.cost_track.add_cost(cost)
     }
@@ -597,6 +603,13 @@ impl CostTracker for Environment<'_, '_> {
 }
 
 impl CostTracker for GlobalContext<'_> {
+    fn compute_cost(
+        &mut self,
+        cost_function: ClarityCostFunctionReference,
+        input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+        self.cost_track.compute_cost(cost_function, input)
+    }
+
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         self.cost_track.add_cost(cost)
     }
