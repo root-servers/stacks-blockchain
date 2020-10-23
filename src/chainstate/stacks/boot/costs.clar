@@ -154,10 +154,10 @@
     (runtime (linear n u1 u1)))
 
 (define-read-only (cost_tuple_get (n uint))
-    (runtime (nLogN n u1 u1)))
+    (runtime (nlogn n u1 u1)))
 
 (define-read-only (cost_tuple_cons (n uint))
-    (runtime (nLogN n u1 u1)))
+    (runtime (nlogn n u1 u1)))
 
 (define-read-only (cost_add (n uint))
     (runtime (linear n u1 u1)))
