@@ -29,9 +29,7 @@ pub mod tests;
 use vm::callables::CallableType;
 use vm::contexts::GlobalContext;
 use vm::contexts::{CallStack, ContractContext, Environment, LocalContext};
-use vm::costs::{
-    cost_functions, CostOverflowingMath, CostTracker, LimitedCostTracker, MemoryConsumer,
-};
+use vm::costs::{cost_functions, CostOverflowingMath, CostTracker, LimitedCostTracker, MemoryConsumer, runtime_cost};
 use vm::database::MemoryBackingStore;
 use vm::errors::{
     CheckErrors, Error, InterpreterError, InterpreterResult as Result, RuntimeErrorType,
@@ -47,8 +45,54 @@ pub use vm::representations::{
 use std::convert::TryInto;
 pub use vm::contexts::MAX_CONTEXT_DEPTH;
 pub use vm::functions::{get_stx_balance_snapshot, stx_transfer_consolidated};
+use vm::costs::cost_functions::ClarityCostFunction;
 
 const MAX_CALL_STACK_DEPTH: usize = 64;
+
+// perhaps include none variant in here?
+pub enum InputSize {
+    None,
+    USize(usize),
+    U16(u16),
+    U32(u32),
+    U64(u64),
+}
+
+impl From<InputSize> for Option<u64> {
+    fn from(u: InputSize) -> Self {
+        match u {
+            InputSize::USize(x) => Some(x as u64),
+            InputSize::U16(x) => Some(u64::from(x)),
+            InputSize::U32(x) => Some(u64::from(x)),
+            InputSize::U64(x) => Some(x),
+            InputSize::None => None
+        }
+    }
+}
+
+impl From<usize> for InputSize {
+    fn from(u: usize) -> Self {
+        Self::USize(u)
+    }
+}
+
+impl From<u16> for InputSize {
+    fn from(u: u16) -> Self {
+        Self::U16(u)
+    }
+}
+
+impl From<u32> for InputSize {
+    fn from(u: u32) -> Self {
+        Self::U32(u)
+    }
+}
+
+impl From<u64> for InputSize {
+    fn from(u: u64) -> Self {
+        Self::U64(u)
+    }
+}
 
 fn lookup_variable(name: &str, context: &LocalContext, env: &mut Environment) -> Result<Value> {
     if name.starts_with(char::is_numeric) || name.starts_with('\'') {
