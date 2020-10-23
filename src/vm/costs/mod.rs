@@ -1,20 +1,19 @@
 pub mod constants;
 pub mod cost_functions;
-pub mod cost_functions_clar;
 
 use rusqlite::types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::{cmp, fmt};
 use vm::types::{TypeSignature, QualifiedContractIdentifier, NONE};
-use vm::{Value, ast, eval_all};
+use vm::{Value, ast, eval_all, InputSize};
 use vm::contexts::{Environment, OwnedEnvironment, ContractContext, GlobalContext};
 use vm::types::Value::UInt;
 use regex::internal::Exec;
 use vm::database::MemoryBackingStore;
 use chainstate::stacks::boot::boot_code_id;
-use vm::costs::cost_functions_clar::{ClarityCostFunction};
+use vm::costs::cost_functions::{ClarityCostFunction};
 use std::collections::{HashMap, BTreeMap};
-use vm::errors::Error;
+use vm::errors::{Error, InterpreterResult};
 
 type Result<T> = std::result::Result<T, CostErrors>;
 
@@ -35,16 +34,34 @@ pub const CLARITY_MEMORY_LIMIT: u64 = 100 * 1000 * 1000;
 //     }};
 // }
 
-macro_rules! runtime_cost {
-    ( $cost_function:expr, $env:expr, $input:expr ) => {{
-        use vm::costs::{CostErrors, CostTracker};
-        let cost_function_reference = $env.cost_function_references.get($cost_function).unwrap().clone();
-        let cost_result = CostTracker::compute_cost($env, cost_function_reference, $input);
-        match cost_result  {
-            Ok(cost) => CostTracker::add_cost($env, cost),
-            Err(e) => Err(e),
-        }
-    }};
+// 1. map into input optional, convert to u64
+// 2. throw error if can't convert
+// 3. add_cost with optional we mapped into
+// macro_rules! runtime_cost {
+//     ( $cost_function:expr, $env:expr, $input:expr ) => {{
+//         use std::convert::TryFrom;
+//         use vm::costs::{CostErrors, CostTracker};
+//         let cost_result = CostTracker::compute_cost($env, $cost_function, $input);
+//         match cost_result  {
+//             Ok(cost) => CostTracker::add_cost($env, cost),
+//             Err(e) => Err(e),
+//         }
+//     }};
+// }
+
+
+pub fn runtime_cost<T: Into<InputSize>, C: CostTracker>(
+    cost_function: ClarityCostFunction,
+    tracker: &mut C,
+    input: T) -> Result<()> {
+
+    // input arg of type Option<T> gets converted to an Option<InputSize> and then to an Option<u64>
+    let cost_result = tracker.compute_cost(cost_function, input.into().into());
+
+    match cost_result  {
+        Ok(cost) => tracker.add_cost(cost),
+        Err(e) => Err(e),
+    }
 }
 
 #[test]
@@ -63,9 +80,8 @@ fn test_eval_contract_cost() {
     // cache boot cost contract
     cost_tracker.cost_contracts.insert(boot_costs_id.clone(), std::include_str!("../../chainstate/stacks/boot/costs.clar"));
 
-    runtime_cost!(&ClarityCostFunction::StxTransfer, &mut cost_tracker, None);
-    runtime_cost!(&ClarityCostFunction::Sub, &mut cost_tracker, Some(10));
-    dbg!(cost_tracker);
+    runtime_cost(ClarityCostFunction::StxTransfer, &mut cost_tracker, InputSize::None);
+    runtime_cost(ClarityCostFunction::Sub, &mut cost_tracker, 10u16);
 }
 
 macro_rules! finally_drop_memory {
@@ -103,7 +119,7 @@ impl MemoryConsumer for Value {
 pub trait CostTracker {
     fn compute_cost(
         &mut self,
-        cost_function: ClarityCostFunctionReference,
+        cost_function: ClarityCostFunction,
         input: Option<u64>) -> Result<ExecutionCost>;
     fn add_cost(&mut self, cost: ExecutionCost) -> Result<()>;
     fn add_memory(&mut self, memory: u64) -> Result<()>;
@@ -115,10 +131,9 @@ pub trait CostTracker {
 impl CostTracker for () {
     fn compute_cost(
         &mut self,
-        _cost_function: ClarityCostFunctionReference,
-        _input: Option<u64>) -> Result<ExecutionCost> {
-        //TODO: what should this be?
-        Err(CostErrors::CostComputationFailed("".to_string()))
+        _cost_function: ClarityCostFunction,
+        _input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+        Ok(ExecutionCost::zero())
     }
     fn add_cost(&mut self, _cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
         Ok(())
@@ -152,6 +167,7 @@ pub struct LimitedCostTracker {
     limit: ExecutionCost,
     memory: u64,
     memory_limit: u64,
+    free: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -165,22 +181,35 @@ pub enum CostErrors {
 impl LimitedCostTracker {
     pub fn new(limit: ExecutionCost) -> LimitedCostTracker {
         LimitedCostTracker {
-            cost_function_references: Default::default(),
-            cost_contracts: Default::default(),
+            cost_function_references: HashMap::new(),
+            cost_contracts: HashMap::new(),
             limit,
             memory_limit: CLARITY_MEMORY_LIMIT,
             total: ExecutionCost::zero(),
             memory: 0,
+            free: false,
         }
     }
     pub fn new_max_limit() -> LimitedCostTracker {
         LimitedCostTracker {
-            cost_function_references: Default::default(),
-            cost_contracts: Default::default(),
+            cost_function_references: HashMap::new(),
+            cost_contracts: HashMap::new(),
             limit: ExecutionCost::max_value(),
             total: ExecutionCost::zero(),
             memory: 0,
             memory_limit: CLARITY_MEMORY_LIMIT,
+            free: false,
+        }
+    }
+    pub fn new_free() -> LimitedCostTracker {
+        LimitedCostTracker {
+            cost_function_references: HashMap::new(),
+            cost_contracts: HashMap::new(),
+            limit: ExecutionCost::max_value(),
+            total: ExecutionCost::zero(),
+            memory: 0,
+            memory_limit: CLARITY_MEMORY_LIMIT,
+            free: true,
         }
     }
     pub fn get_total(&self) -> ExecutionCost {
@@ -203,28 +232,7 @@ fn map_gets<K,V>(map: BTreeMap<K,V>, keys: Vec<K>) -> Option<Vec<V>> where K: Or
     Some(output)
 }
 
-fn compute_cost(
-    cost_tracker: &mut LimitedCostTracker,
-    cost_function: ClarityCostFunctionReference,
-    input_size: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
-
-    let mut marf = MemoryBackingStore::new();
-    let conn = marf.as_clarity_db();
-    let mut global_context = GlobalContext::new(conn, cost_tracker.clone());
-
-    let cost_contract = cost_tracker.cost_contracts.get(&cost_function.contract_id).unwrap();
-    let mut contract_context = ContractContext::new(cost_function.contract_id.clone());
-
-    let program = match input_size {
-        Some(size) => format!("{}({} u{})", cost_contract, cost_function.function_name, size),
-        None => format!("{}({})", cost_contract, cost_function.function_name)
-    };
-
-    let eval_result = global_context.execute(|g| {
-        let parsed = ast::build_ast(&cost_function.contract_id, program.as_str(), &mut ())?.expressions;
-        eval_all(&parsed, &mut contract_context, g)
-    });
-
+fn parse_cost(eval_result: InterpreterResult<Option<Value>>) -> Result<ExecutionCost> {
     match eval_result {
         Ok(Some(Value::Tuple(data))) => {
             let results = (
@@ -237,10 +245,10 @@ fn compute_cost(
 
             match results {
                 (Some(UInt(write_length)),
-                 Some(UInt(write_count)),
-                 Some(UInt(runtime)),
-                 Some(UInt(read_length)),
-                 Some(UInt(read_count))) => {
+                    Some(UInt(write_count)),
+                    Some(UInt(runtime)),
+                    Some(UInt(read_length)),
+                    Some(UInt(read_count))) => {
                     Ok(ExecutionCost {
                         write_length: (*write_length as u64),
                         write_count: (*write_count as u64),
@@ -252,9 +260,36 @@ fn compute_cost(
                 _ => Err(CostErrors::CostComputationFailed("Execution Cost tuple does not contain only UInts".to_string()))
             }
         },
-        Ok(_) => Err(CostErrors::CostComputationFailed("Clarity cost function result not an Execution Cost tuple".to_string())),
+        Ok(Some(_)) => Err(CostErrors::CostComputationFailed("Clarity cost function returned something other than a Cost tuple".to_string())),
+        Ok(None) => Err(CostErrors::CostComputationFailed("Clarity cost function returned nothing".to_string())),
         Err(e) => Err(CostErrors::CostComputationFailed(format!("Error evaluating result of cost function: {}", e))),
     }
+}
+
+fn compute_cost(
+    cost_tracker: &mut LimitedCostTracker,
+    cost_function: ClarityCostFunction,
+    input_size: Option<u64>) -> Result<ExecutionCost> {
+
+    let mut marf = MemoryBackingStore::new();
+    let conn = marf.as_clarity_db();
+    let mut global_context = GlobalContext::new(conn, LimitedCostTracker::new_free());
+
+    let cost_function_reference = cost_tracker.cost_function_references.get(&cost_function).unwrap().clone();
+    let cost_contract = cost_tracker.cost_contracts.get(&cost_function_reference.contract_id).unwrap();
+    let mut contract_context = ContractContext::new(cost_function_reference.contract_id.clone());
+
+    let program = match input_size {
+        Some(size) => format!("{}({} u{})", cost_contract, cost_function_reference.function_name, size),
+        None => format!("{}({})", cost_contract, cost_function_reference.function_name)
+    };
+
+    let eval_result = global_context.execute(|g| {
+        let parsed = ast::build_ast_free(&cost_function_reference.contract_id, program.as_str())?.expressions;
+        eval_all(&parsed, &mut contract_context, g)
+    });
+
+    parse_cost(eval_result)
 }
 
 fn add_cost(
@@ -289,38 +324,44 @@ fn drop_memory(s: &mut LimitedCostTracker, memory: u64) {
 }
 
 impl CostTracker for LimitedCostTracker {
-    fn compute_cost(&mut self, cost_function: ClarityCostFunctionReference, input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+    fn compute_cost(&mut self, cost_function: ClarityCostFunction, input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+        if self.free { return Ok(ExecutionCost::zero()) }
         compute_cost(self, cost_function, input)
     }
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
+        if self.free { return Ok(()) }
         add_cost(self, cost)
     }
     fn add_memory(&mut self, memory: u64) -> std::result::Result<(), CostErrors> {
+        if self.free { return Ok(()) }
         add_memory(self, memory)
     }
     fn drop_memory(&mut self, memory: u64) {
-        drop_memory(self, memory)
+        if !self.free { drop_memory(self, memory) }
     }
     fn reset_memory(&mut self) {
-        self.memory = 0;
+        if !self.free { self.memory = 0; }
     }
 }
 
 impl CostTracker for &mut LimitedCostTracker {
-    fn compute_cost(&mut self, cost_function: ClarityCostFunctionReference, input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+    fn compute_cost(&mut self, cost_function: ClarityCostFunction, input: Option<u64>) -> std::result::Result<ExecutionCost, CostErrors> {
+        if self.free { return Ok(ExecutionCost::zero()) }
         compute_cost(self, cost_function, input)
     }
     fn add_cost(&mut self, cost: ExecutionCost) -> std::result::Result<(), CostErrors> {
+        if self.free { return Ok(()) }
         add_cost(self, cost)
     }
     fn add_memory(&mut self, memory: u64) -> std::result::Result<(), CostErrors> {
+        if self.free { return Ok(()) }
         add_memory(self, memory)
     }
     fn drop_memory(&mut self, memory: u64) {
-        drop_memory(self, memory)
+        if !self.free { drop_memory(self, memory) }
     }
     fn reset_memory(&mut self) {
-        self.memory = 0;
+        if !self.free { self.memory = 0; }
     }
 }
 
