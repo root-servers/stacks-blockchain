@@ -49,7 +49,6 @@ use vm::costs::cost_functions::ClarityCostFunction;
 
 const MAX_CALL_STACK_DEPTH: usize = 64;
 
-// perhaps include none variant in here?
 pub enum InputSize {
     None,
     USize(usize),
