@@ -1,10 +1,11 @@
-use vm::costs::cost_functions;
+use vm::costs::{cost_functions, runtime_cost};
 use vm::errors::{
     check_argument_count, check_arguments_at_least, CheckErrors, InterpreterResult as Result,
 };
 use vm::representations::SymbolicExpression;
 use vm::types::{TypeSignature, Value};
 use vm::{eval, Environment, LocalContext};
+use vm::costs::cost_functions::ClarityCostFunction;
 
 fn type_force_bool(value: &Value) -> Result<bool> {
     match *value {
@@ -20,7 +21,7 @@ pub fn special_or(
 ) -> Result<Value> {
     check_arguments_at_least(1, args)?;
 
-    runtime_cost!(cost_functions::OR, env, args.len())?;
+    runtime_cost(ClarityCostFunction::Or, env, args.len())?;
 
     for arg in args.iter() {
         let evaluated = eval(&arg, env, context)?;
@@ -40,7 +41,7 @@ pub fn special_and(
 ) -> Result<Value> {
     check_arguments_at_least(1, args)?;
 
-    runtime_cost!(cost_functions::AND, env, args.len())?;
+    runtime_cost(ClarityCostFunction::And, env, args.len())?;
 
     for arg in args.iter() {
         let evaluated = eval(&arg, env, context)?;

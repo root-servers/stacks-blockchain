@@ -7,7 +7,7 @@ pub mod errors;
 pub mod stack_depth_checker;
 pub mod sugar_expander;
 pub mod types;
-use vm::costs::{cost_functions, CostTracker};
+use vm::costs::{cost_functions, CostTracker, runtime_cost, LimitedCostTracker};
 use vm::errors::{Error, RuntimeErrorType};
 
 use vm::representations::SymbolicExpression;
@@ -21,6 +21,7 @@ use self::sugar_expander::SugarExpander;
 use self::traits_resolver::TraitsResolver;
 use self::types::BuildASTPass;
 pub use self::types::ContractAST;
+use vm::costs::cost_functions::ClarityCostFunction;
 
 /// Legacy function
 pub fn parse(
@@ -36,8 +37,8 @@ pub fn build_ast<T: CostTracker>(
     source_code: &str,
     cost_track: &mut T,
 ) -> ParseResult<ContractAST> {
-    runtime_cost!(
-        cost_functions::AST_PARSE,
+    runtime_cost(
+        ClarityCostFunction::AstParse,
         cost_track,
         source_code.len() as u64
     )?;
@@ -46,6 +47,21 @@ pub fn build_ast<T: CostTracker>(
     StackDepthChecker::run_pass(&mut contract_ast)?;
     ExpressionIdentifier::run_pre_expression_pass(&mut contract_ast)?;
     DefinitionSorter::run_pass(&mut contract_ast, cost_track)?;
+    TraitsResolver::run_pass(&mut contract_ast)?;
+    SugarExpander::run_pass(&mut contract_ast)?;
+    ExpressionIdentifier::run_expression_pass(&mut contract_ast)?;
+    Ok(contract_ast)
+}
+
+pub fn build_ast_free(
+    contract_identifier: &QualifiedContractIdentifier,
+    source_code: &str,
+) -> ParseResult<ContractAST> {
+    let pre_expressions = parser::parse(source_code)?;
+    let mut contract_ast = ContractAST::new(contract_identifier.clone(), pre_expressions);
+    StackDepthChecker::run_pass(&mut contract_ast)?;
+    ExpressionIdentifier::run_pre_expression_pass(&mut contract_ast)?;
+    DefinitionSorter::run_pass_free(&mut contract_ast)?;
     TraitsResolver::run_pass(&mut contract_ast)?;
     SugarExpander::run_pass(&mut contract_ast)?;
     ExpressionIdentifier::run_expression_pass(&mut contract_ast)?;

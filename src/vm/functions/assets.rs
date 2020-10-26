@@ -2,7 +2,8 @@ use vm::functions::tuples;
 use vm::functions::tuples::TupleDefinitionType::{Explicit, Implicit};
 
 use std::convert::TryFrom;
-use vm::costs::{cost_functions, CostTracker};
+use vm::costs::{cost_functions, CostTracker, runtime_cost};
+use vm::costs::cost_functions::ClarityCostFunction;
 use vm::errors::{
     check_argument_count, CheckErrors, Error, InterpreterError, InterpreterResult as Result,
     RuntimeErrorType,
@@ -11,7 +12,7 @@ use vm::representations::SymbolicExpression;
 use vm::types::{
     AssetIdentifier, BlockInfoProperty, BuffData, OptionalData, PrincipalData, TypeSignature, Value,
 };
-use vm::{eval, Environment, LocalContext};
+use vm::{eval, Environment, LocalContext, InputSize};
 
 use vm::database::ClarityDatabase;
 use vm::database::STXBalance;
@@ -73,7 +74,7 @@ pub fn special_stx_balance(
 ) -> Result<Value> {
     check_argument_count(1, args)?;
 
-    runtime_cost!(cost_functions::STX_BALANCE, env, 0)?;
+    runtime_cost(ClarityCostFunction::StxBalance, env, InputSize::None)?;
 
     let owner = eval(&args[0], env, context)?;
 
@@ -155,7 +156,7 @@ pub fn special_stx_transfer(
 ) -> Result<Value> {
     check_argument_count(3, args)?;
 
-    runtime_cost!(cost_functions::STX_TRANSFER, env, 0)?;
+    runtime_cost(ClarityCostFunction::StxTransfer, env, InputSize::None)?;
 
     let amount_val = eval(&args[0], env, context)?;
     let from_val = eval(&args[1], env, context)?;
@@ -177,7 +178,7 @@ pub fn special_stx_burn(
 ) -> Result<Value> {
     check_argument_count(2, args)?;
 
-    runtime_cost!(cost_functions::STX_TRANSFER, env, 0)?;
+    runtime_cost(ClarityCostFunction::StxTransfer, env, InputSize::None)?;
 
     let amount_val = eval(&args[0], env, context)?;
     let from_val = eval(&args[1], env, context)?;
@@ -225,7 +226,7 @@ pub fn special_mint_token(
 ) -> Result<Value> {
     check_argument_count(3, args)?;
 
-    runtime_cost!(cost_functions::FT_MINT, env, 0)?;
+    runtime_cost(ClarityCostFunction::FtMint, env, InputSize::None)?;
 
     let token_name = args[0].match_atom().ok_or(CheckErrors::BadTokenName)?;
 
@@ -290,7 +291,7 @@ pub fn special_mint_asset(
         .database
         .get_nft_key_type(&env.contract_context.contract_identifier, asset_name)?;
 
-    runtime_cost!(cost_functions::NFT_MINT, env, expected_asset_type.size())?;
+    runtime_cost(ClarityCostFunction::NftMint, env, expected_asset_type.size())?;
 
     if !expected_asset_type.admits(&asset) {
         return Err(CheckErrors::TypeValueError(expected_asset_type, asset).into());
@@ -347,8 +348,8 @@ pub fn special_transfer_asset(
         .database
         .get_nft_key_type(&env.contract_context.contract_identifier, asset_name)?;
 
-    runtime_cost!(
-        cost_functions::NFT_TRANSFER,
+    runtime_cost(
+        ClarityCostFunction::NftTransfer,
         env,
         expected_asset_type.size()
     )?;
@@ -419,7 +420,7 @@ pub fn special_transfer_token(
 ) -> Result<Value> {
     check_argument_count(4, args)?;
 
-    runtime_cost!(cost_functions::FT_TRANSFER, env, 0)?;
+    runtime_cost(ClarityCostFunction::FtTransfer, env, InputSize::None)?;
 
     let token_name = args[0].match_atom().ok_or(CheckErrors::BadTokenName)?;
 
@@ -512,7 +513,7 @@ pub fn special_get_balance(
 ) -> Result<Value> {
     check_argument_count(2, args)?;
 
-    runtime_cost!(cost_functions::FT_BALANCE, env, 0)?;
+    runtime_cost(ClarityCostFunction::FtBalance, env, InputSize::None)?;
 
     let token_name = args[0].match_atom().ok_or(CheckErrors::BadTokenName)?;
 
@@ -545,7 +546,7 @@ pub fn special_get_owner(
         .database
         .get_nft_key_type(&env.contract_context.contract_identifier, asset_name)?;
 
-    runtime_cost!(cost_functions::NFT_OWNER, env, expected_asset_type.size())?;
+    runtime_cost(ClarityCostFunction::NftOwner, env, expected_asset_type.size())?;
 
     if !expected_asset_type.admits(&asset) {
         return Err(CheckErrors::TypeValueError(expected_asset_type, asset).into());

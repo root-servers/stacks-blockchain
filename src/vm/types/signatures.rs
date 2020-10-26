@@ -6,7 +6,7 @@ use std::{cmp, fmt};
 
 use address::c32;
 use util::hash;
-use vm::costs::{cost_functions, CostOverflowingMath};
+use vm::costs::{cost_functions, CostOverflowingMath, runtime_cost};
 use vm::errors::{CheckErrors, Error as VMError, IncomparableError, RuntimeErrorType};
 use vm::representations::{
     ClarityName, ContractName, SymbolicExpression, SymbolicExpressionType, TraitDefinition,
@@ -925,7 +925,7 @@ impl TypeSignature {
         x: &SymbolicExpression,
         accounting: &mut A,
     ) -> Result<TypeSignature> {
-        runtime_cost!(cost_functions::TYPE_PARSE_STEP, accounting, 0)?;
+        runtime_cost(ClarityCostFunction::TypeParseStep, accounting, InputSize::None)?;
 
         match x.expr {
             SymbolicExpressionType::Atom(ref atom_type_str) => {
@@ -1200,6 +1200,8 @@ impl TupleTypeSignature {
 }
 
 use vm::costs::CostTracker;
+use vm::costs::cost_functions::ClarityCostFunction;
+use vm::InputSize;
 
 pub fn parse_name_type_pairs<A: CostTracker>(
     name_type_pairs: &[SymbolicExpression],

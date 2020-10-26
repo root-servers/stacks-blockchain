@@ -1,6 +1,6 @@
 use std::cmp;
 use std::convert::TryInto;
-use vm::costs::{cost_functions, CostOverflowingMath};
+use vm::costs::{cost_functions, CostOverflowingMath, runtime_cost};
 use vm::errors::{
     check_argument_count, CheckErrors, InterpreterResult as Result, RuntimeErrorType,
 };
@@ -9,7 +9,8 @@ use vm::types::{
     signatures::ListTypeData, CharType, ListData, SequenceData, TypeSignature,
     TypeSignature::BoolType, Value,
 };
-use vm::{apply, eval, lookup_function, CallableType, Environment, LocalContext};
+use vm::{apply, eval, lookup_function, CallableType, Environment, LocalContext, InputSize};
+use vm::costs::cost_functions::ClarityCostFunction;
 
 pub fn list_cons(
     args: &[SymbolicExpression],
@@ -24,7 +25,7 @@ pub fn list_cons(
         arg_size = arg_size.cost_overflow_add(a.size().into())?;
     }
 
-    runtime_cost!(cost_functions::LIST_CONS, env, arg_size)?;
+    runtime_cost(ClarityCostFunction::ListCons, env, arg_size)?;
 
     Value::list_from(args)
 }
@@ -36,7 +37,7 @@ pub fn special_filter(
 ) -> Result<Value> {
     check_argument_count(2, args)?;
 
-    runtime_cost!(cost_functions::FILTER, env, 0)?;
+    runtime_cost(ClarityCostFunction::Filter, env, InputSize::None)?;
 
     let function_name = args[0].match_atom().ok_or(CheckErrors::ExpectedName)?;
 
@@ -67,7 +68,7 @@ pub fn special_fold(
 ) -> Result<Value> {
     check_argument_count(3, args)?;
 
-    runtime_cost!(cost_functions::FOLD, env, 0)?;
+    runtime_cost(ClarityCostFunction::Fold, env, InputSize::None)?;
 
     let function_name = args[0].match_atom().ok_or(CheckErrors::ExpectedName)?;
 
@@ -100,7 +101,7 @@ pub fn special_map(
 ) -> Result<Value> {
     check_argument_count(2, args)?;
 
-    runtime_cost!(cost_functions::MAP, env, 0)?;
+    runtime_cost(ClarityCostFunction::Map, env, InputSize::None)?;
 
     let function_name = args[0].match_atom().ok_or(CheckErrors::ExpectedName)?;
     let mut sequence = eval(&args[1], env, context)?;
@@ -134,8 +135,8 @@ pub fn special_append(
             } = list;
             let (entry_type, size) = type_signature.destruct();
             let element_type = TypeSignature::type_of(&element);
-            runtime_cost!(
-                cost_functions::APPEND,
+            runtime_cost(
+                ClarityCostFunction::Append,
                 env,
                 u64::from(cmp::max(entry_type.size(), element_type.size()))
             )?;
@@ -169,8 +170,8 @@ pub fn special_concat(
     let mut wrapped_seq = eval(&args[0], env, context)?;
     let mut other_wrapped_seq = eval(&args[1], env, context)?;
 
-    runtime_cost!(
-        cost_functions::CONCAT,
+    runtime_cost(
+        ClarityCostFunction::Concat,
         env,
         u64::from(wrapped_seq.size()).cost_overflow_add(u64::from(other_wrapped_seq.size()))?
     )?;
@@ -192,7 +193,7 @@ pub fn special_as_max_len(
 
     let mut sequence = eval(&args[0], env, context)?;
 
-    runtime_cost!(cost_functions::AS_MAX_LEN, env, 0)?;
+    runtime_cost(ClarityCostFunction::AsMaxLen, env, InputSize::None)?;
 
     if let Some(Value::UInt(expected_len)) = args[1].match_literal_value() {
         let sequence_len = match sequence {
