@@ -81,7 +81,9 @@ fn test_eval_contract_cost() {
     cost_tracker.cost_contracts.insert(boot_costs_id.clone(), std::include_str!("../../chainstate/stacks/boot/costs.clar"));
 
     runtime_cost(ClarityCostFunction::StxTransfer, &mut cost_tracker, InputSize::None);
-    runtime_cost(ClarityCostFunction::Sub, &mut cost_tracker, 10u16);
+    runtime_cost(ClarityCostFunction::Sub, &mut cost_tracker, 10);
+
+    dbg!(cost_tracker);
 }
 
 macro_rules! finally_drop_memory {
@@ -99,12 +101,11 @@ pub fn analysis_typecheck_cost<T: CostTracker>(
 ) -> Result<()> {
     let t1_size = t1.type_size().map_err(|_| CostErrors::CostOverflow)?;
     let t2_size = t2.type_size().map_err(|_| CostErrors::CostOverflow)?;
-    let cost =
-        cost_functions::ANALYSIS_TYPE_CHECK.compute_cost(cmp::max(t1_size, t2_size) as u64)?;
+    let cost = track.compute_cost(
+        ClarityCostFunction::AnalysisTypeCheck,
+        Some(cmp::max(t1_size, t2_size) as u64))?;
     track.add_cost(cost)
 }
-
-pub struct TypeCheckCost {}
 
 pub trait MemoryConsumer {
     fn get_memory_use(&self) -> u64;
@@ -275,8 +276,14 @@ fn compute_cost(
     let conn = marf.as_clarity_db();
     let mut global_context = GlobalContext::new(conn, LimitedCostTracker::new_free());
 
-    let cost_function_reference = cost_tracker.cost_function_references.get(&cost_function).unwrap().clone();
-    let cost_contract = cost_tracker.cost_contracts.get(&cost_function_reference.contract_id).unwrap();
+    let cost_function_reference = cost_tracker.cost_function_references
+        .get(&cost_function)
+        .ok_or(CostErrors::CostComputationFailed("CostFunction not defined".to_string()))?.clone();
+
+    let cost_contract = cost_tracker.cost_contracts
+        .get(&cost_function_reference.contract_id)
+        .ok_or(CostErrors::CostComputationFailed("Cost Contract not cached".to_string()))?;
+
     let mut contract_context = ContractContext::new(cost_function_reference.contract_id.clone());
 
     let program = match input_size {
@@ -362,12 +369,6 @@ impl CostTracker for &mut LimitedCostTracker {
     }
     fn reset_memory(&mut self) {
         if !self.free { self.memory = 0; }
-    }
-}
-
-impl TypeCheckCost {
-    pub fn compute_cost(&self, t: &TypeSignature) -> Result<ExecutionCost> {
-        cost_functions::INNER_TYPE_CHECK_COST.compute_cost(t.size() as u64)
     }
 }
 
