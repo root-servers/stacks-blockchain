@@ -30,6 +30,7 @@ pub use super::errors::{
 };
 use vm::contexts::Environment;
 use vm::costs::cost_functions::ClarityCostFunction;
+use vm::InputSize;
 
 #[cfg(test)]
 mod tests;
@@ -418,7 +419,7 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
 
     // Type checks an expression, recursively type checking its subexpressions
     pub fn type_check(&mut self, expr: &SymbolicExpression, context: &TypingContext) -> TypeResult {
-        runtime_cost(ClarityCostFunction::AnalysisVisit, self, 1)?;
+        runtime_cost(ClarityCostFunction::AnalysisVisit, self, InputSize::None)?;
 
         let mut result = self.inner_type_check(expr, context);
 
@@ -604,7 +605,7 @@ impl<'a, 'b> TypeChecker<'a, 'b> {
     }
 
     fn lookup_variable(&mut self, name: &str, context: &TypingContext) -> TypeResult {
-        runtime_cost(ClarityCostFunction::AnalysisLookupVariableConst, self, 1)?;
+        runtime_cost(ClarityCostFunction::AnalysisLookupVariableConst, self, InputSize::None)?;
 
         if let Some(type_result) = type_reserved_variable(name) {
             Ok(type_result)

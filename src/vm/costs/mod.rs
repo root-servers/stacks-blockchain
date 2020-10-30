@@ -5,7 +5,7 @@ use rusqlite::types::{FromSql, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use std::convert::{TryFrom, TryInto};
 use std::{cmp, fmt};
 use vm::types::{TypeSignature, QualifiedContractIdentifier, NONE};
-use vm::{Value, ast, eval_all, InputSize};
+use vm::{Value, ast, eval_all, InputSize, SymbolicExpression};
 use vm::contexts::{Environment, OwnedEnvironment, ContractContext, GlobalContext};
 use vm::types::Value::UInt;
 use regex::internal::Exec;
@@ -14,76 +14,37 @@ use chainstate::stacks::boot::boot_code_id;
 use vm::costs::cost_functions::{ClarityCostFunction};
 use std::collections::{HashMap, BTreeMap};
 use vm::errors::{Error, InterpreterResult};
+use vm::database::marf::NullBackingStore;
+use std::time::Instant;
+use vm::ast::ContractAST;
 
 type Result<T> = std::result::Result<T, CostErrors>;
 
 pub const CLARITY_MEMORY_LIMIT: u64 = 100 * 1000 * 1000;
-
-// macro_rules! runtime_cost {
-//     ( $cost_spec:expr, $env:expr, $input:expr ) => {{
-//         use std::convert::TryInto;
-//         use vm::costs::{CostErrors, CostTracker};
-//         let input = $input
-//             .try_into()
-//             .map_err(|_| CostErrors::CostOverflow)
-//             .and_then(|input| ($cost_spec).compute_cost(input));
-//         match input {
-//             Ok(cost) => CostTracker::add_cost($env, cost),
-//             Err(e) => Err(e),
-//         }
-//     }};
-// }
-
-// 1. map into input optional, convert to u64
-// 2. throw error if can't convert
-// 3. add_cost with optional we mapped into
-// macro_rules! runtime_cost {
-//     ( $cost_function:expr, $env:expr, $input:expr ) => {{
-//         use std::convert::TryFrom;
-//         use vm::costs::{CostErrors, CostTracker};
-//         let cost_result = CostTracker::compute_cost($env, $cost_function, $input);
-//         match cost_result  {
-//             Ok(cost) => CostTracker::add_cost($env, cost),
-//             Err(e) => Err(e),
-//         }
-//     }};
-// }
-
 
 pub fn runtime_cost<T: Into<InputSize>, C: CostTracker>(
     cost_function: ClarityCostFunction,
     tracker: &mut C,
     input: T) -> Result<()> {
 
-    // input arg of type Option<T> gets converted to an Option<InputSize> and then to an Option<u64>
-    let cost_result = tracker.compute_cost(cost_function, input.into().into());
+    // let start = Instant::now();
+    let cost = tracker.compute_cost(cost_function, input.into().into())?;
+    // let duration = start.elapsed();
+    // dbg!(cost_function, duration);
 
-    match cost_result  {
-        Ok(cost) => tracker.add_cost(cost),
-        Err(e) => Err(e),
-    }
+    tracker.add_cost(cost)
 }
 
 #[test]
 fn test_eval_contract_cost() {
     let mut cost_tracker = LimitedCostTracker::new_max_limit();
-
-    let boot_costs_id = boot_code_id("boot_costs");
-
-    // initialize all cost functions with boot cost contract
-    let mut m = HashMap::new();
-    for f in ClarityCostFunction::ALL.iter() {
-        m.insert(f, ClarityCostFunctionReference::new(boot_costs_id.clone(), f.get_name()));
-    }
-    cost_tracker.cost_function_references = m;
-
-    // cache boot cost contract
-    cost_tracker.cost_contracts.insert(boot_costs_id.clone(), std::include_str!("../../chainstate/stacks/boot/costs.clar"));
+    cost_tracker.load_boot_costs();
 
     runtime_cost(ClarityCostFunction::StxTransfer, &mut cost_tracker, InputSize::None);
     runtime_cost(ClarityCostFunction::Sub, &mut cost_tracker, 10);
+    runtime_cost(ClarityCostFunction::AnalysisVisit, &mut cost_tracker, InputSize::None);
 
-    dbg!(cost_tracker);
+    assert_eq!(cost_tracker.total.runtime, 13u64);
 }
 
 macro_rules! finally_drop_memory {
@@ -163,7 +124,7 @@ type ClarityCostContract = &'static str;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LimitedCostTracker {
     cost_function_references: HashMap<&'static ClarityCostFunction, ClarityCostFunctionReference>,
-    cost_contracts: HashMap<QualifiedContractIdentifier, ClarityCostContract>,
+    cost_contracts: HashMap<QualifiedContractIdentifier, ContractAST>,
     total: ExecutionCost,
     limit: ExecutionCost,
     memory: u64,
@@ -180,8 +141,9 @@ pub enum CostErrors {
 }
 
 impl LimitedCostTracker {
+    //TODO: require cost functions/contracts to be included
     pub fn new(limit: ExecutionCost) -> LimitedCostTracker {
-        LimitedCostTracker {
+        let mut cost_tracker = LimitedCostTracker {
             cost_function_references: HashMap::new(),
             cost_contracts: HashMap::new(),
             limit,
@@ -189,10 +151,14 @@ impl LimitedCostTracker {
             total: ExecutionCost::zero(),
             memory: 0,
             free: false,
-        }
+        };
+        //TODO: costs chould get passed in and this shouldn't be constructable without them
+        cost_tracker.load_boot_costs();
+        cost_tracker
     }
+    //TODO: require cost functions/contracts to be included
     pub fn new_max_limit() -> LimitedCostTracker {
-        LimitedCostTracker {
+        let mut cost_tracker = LimitedCostTracker {
             cost_function_references: HashMap::new(),
             cost_contracts: HashMap::new(),
             limit: ExecutionCost::max_value(),
@@ -200,7 +166,9 @@ impl LimitedCostTracker {
             memory: 0,
             memory_limit: CLARITY_MEMORY_LIMIT,
             free: false,
-        }
+        };
+        cost_tracker.load_boot_costs();
+        cost_tracker
     }
     pub fn new_free() -> LimitedCostTracker {
         LimitedCostTracker {
@@ -212,6 +180,22 @@ impl LimitedCostTracker {
             memory_limit: CLARITY_MEMORY_LIMIT,
             free: true,
         }
+    }
+    pub fn load_boot_costs(&mut self) {
+        let boot_costs_id = boot_code_id("boot_costs");
+
+        let mut m = HashMap::new();
+        for f in ClarityCostFunction::ALL.iter() {
+            m.insert(f, ClarityCostFunctionReference::new(boot_costs_id.clone(), f.get_name()));
+        }
+        self.cost_function_references = m;
+
+        let ast = ast::build_ast(
+            &boot_costs_id,
+            std::include_str!("../../chainstate/stacks/boot/costs.clar"),
+            &mut LimitedCostTracker::new_free()).unwrap();
+
+        self.cost_contracts.insert(boot_costs_id.clone(), ast);
     }
     pub fn get_total(&self) -> ExecutionCost {
         self.total.clone()
@@ -233,7 +217,7 @@ fn map_gets<K,V>(map: BTreeMap<K,V>, keys: Vec<K>) -> Option<Vec<V>> where K: Or
     Some(output)
 }
 
-fn parse_cost(eval_result: InterpreterResult<Option<Value>>) -> Result<ExecutionCost> {
+fn parse_cost(cost_function: ClarityCostFunction, eval_result: InterpreterResult<Option<Value>>) -> Result<ExecutionCost> {
     match eval_result {
         Ok(Some(Value::Tuple(data))) => {
             let results = (
@@ -263,7 +247,7 @@ fn parse_cost(eval_result: InterpreterResult<Option<Value>>) -> Result<Execution
         },
         Ok(Some(_)) => Err(CostErrors::CostComputationFailed("Clarity cost function returned something other than a Cost tuple".to_string())),
         Ok(None) => Err(CostErrors::CostComputationFailed("Clarity cost function returned nothing".to_string())),
-        Err(e) => Err(CostErrors::CostComputationFailed(format!("Error evaluating result of cost function: {}", e))),
+        Err(e) => Err(CostErrors::CostComputationFailed(format!("Error evaluating result of cost function {}: {}", cost_function.get_name(), e))),
     }
 }
 
@@ -272,8 +256,8 @@ fn compute_cost(
     cost_function: ClarityCostFunction,
     input_size: Option<u64>) -> Result<ExecutionCost> {
 
-    let mut marf = MemoryBackingStore::new();
-    let conn = marf.as_clarity_db();
+    let mut null_store = NullBackingStore::new();
+    let conn = null_store.as_clarity_db();
     let mut global_context = GlobalContext::new(conn, LimitedCostTracker::new_free());
 
     let cost_function_reference = cost_tracker.cost_function_references
@@ -286,17 +270,19 @@ fn compute_cost(
 
     let mut contract_context = ContractContext::new(cost_function_reference.contract_id.clone());
 
-    let program = match input_size {
-        Some(size) => format!("{}({} u{})", cost_contract, cost_function_reference.function_name, size),
-        None => format!("{}({})", cost_contract, cost_function_reference.function_name)
-    };
+    let mut expressions = cost_contract.expressions.clone();
+    let mut program = vec![SymbolicExpression::atom(cost_function_reference.function_name[..].into())];
+    if input_size.is_some() {
+        program.push(SymbolicExpression::atom_value(Value::UInt(input_size.unwrap().into())))
+    }
+    let function_invocation = SymbolicExpression::list(program.into_boxed_slice());
+    expressions.append(&mut vec![function_invocation]);
 
     let eval_result = global_context.execute(|g| {
-        let parsed = ast::build_ast_free(&cost_function_reference.contract_id, program.as_str())?.expressions;
-        eval_all(&parsed, &mut contract_context, g)
+        eval_all(&expressions, &mut contract_context, g)
     });
 
-    parse_cost(eval_result)
+    parse_cost(cost_function, eval_result)
 }
 
 fn add_cost(
